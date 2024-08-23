@@ -393,7 +393,7 @@ func (ac *AzureClusterHandler) UpgradeCluster(clusterIID irs.IID, newVersion str
 		LoggingError(hiscallInfo, upgradeErr)
 		return irs.ClusterInfo{}, upgradeErr
 	}
-	err = upgradeCluter(cluster, newVersion, ac.ManagedClustersClient, ac.AgentPoolsClient, ac.VirtualMachineScaleSetsClient, ac.Ctx, ac.Region)
+	err = upgradeCluster(cluster, newVersion, ac.ManagedClustersClient, ac.AgentPoolsClient, ac.VirtualMachineScaleSetsClient, ac.Ctx, ac.Region)
 	if err != nil {
 		upgradeErr = errors.New(fmt.Sprintf("Failed to Upgrade Cluster. err = %s", err))
 		cblogger.Error(upgradeErr.Error())
@@ -440,21 +440,41 @@ func checkUpgradeCluster(cluster containerservice.ManagedCluster, agentPoolsClie
 	return nil
 }
 
-func upgradeCluter(cluster containerservice.ManagedCluster, newVersion string, managedClustersClient *containerservice.ManagedClustersClient, agentPoolsClient *containerservice.AgentPoolsClient, virtualMachineScaleSetsClient *compute.VirtualMachineScaleSetsClient, ctx context.Context, region idrv.RegionInfo) error {
+func upgradeCluster(cluster containerservice.ManagedCluster, newVersion string, managedClustersClient *containerservice.ManagedClustersClient, agentPoolsClient *containerservice.AgentPoolsClient, virtualMachineScaleSetsClient *compute.VirtualMachineScaleSetsClient, ctx context.Context, region idrv.RegionInfo) error {
 	err := checkUpgradeCluster(cluster, agentPoolsClient, virtualMachineScaleSetsClient, ctx)
 	if err != nil {
 		return err
 	}
 	updateCluster := cluster
 	updateCluster.KubernetesVersion = to.StringPtr(newVersion)
-	_, err = managedClustersClient.CreateOrUpdate(ctx, region.Region, *cluster.Name, updateCluster)
+	updateClusterResult, err := managedClustersClient.CreateOrUpdate(ctx, region.Region, *cluster.Name, updateCluster)
 	if err != nil {
 		return err
 	}
-	//err = upgradeResult.WaitForCompletionRef(ctx, managedClustersClient.Client)
-	//if err != nil {
-	//	return err
-	//}
+	err = updateClusterResult.WaitForCompletionRef(ctx, managedClustersClient.Client)
+	if err != nil {
+		return err
+	}
+
+	agentPools, err := agentPoolsClient.List(ctx, region.Region, *cluster.Name)
+	if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, agentPool := range agentPools.Values() {
+		updateAgentPool := agentPool
+		updateAgentPool.OrchestratorVersion = to.StringPtr(newVersion)
+		_, err := agentPoolsClient.CreateOrUpdate(ctx, region.Region, to.String(cluster.Name), to.String(agentPool.Name), updateAgentPool)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
 	return nil
 }
 
@@ -1572,7 +1592,7 @@ func checkmanualScaleModeNodeGroupScaleValid(minNodeSize int, maxNodeSize int) e
 	return nil
 }
 
-func menualScaleModechangeNodeGroupScaling(cluster containerservice.ManagedCluster, agentPool containerservice.AgentPool, desiredNodeSize int, minNodeSize int, maxNodeSize int, managedClustersClient *containerservice.ManagedClustersClient, agentPoolsClient *containerservice.AgentPoolsClient, virtualMachineScaleSetsClient *compute.VirtualMachineScaleSetsClient, virtualMachineScaleSetVMsClient *compute.VirtualMachineScaleSetVMsClient, credentialInfo idrv.CredentialInfo, region idrv.RegionInfo, ctx context.Context) (irs.NodeGroupInfo, error) {
+func manualScaleModechangeNodeGroupScaling(cluster containerservice.ManagedCluster, agentPool containerservice.AgentPool, desiredNodeSize int, minNodeSize int, maxNodeSize int, managedClustersClient *containerservice.ManagedClustersClient, agentPoolsClient *containerservice.AgentPoolsClient, virtualMachineScaleSetsClient *compute.VirtualMachineScaleSetsClient, virtualMachineScaleSetVMsClient *compute.VirtualMachineScaleSetVMsClient, credentialInfo idrv.CredentialInfo, region idrv.RegionInfo, ctx context.Context) (irs.NodeGroupInfo, error) {
 	err := checkmanualScaleModeNodeGroupScaleValid(minNodeSize, maxNodeSize)
 	if err != nil {
 		return irs.NodeGroupInfo{}, errors.New(fmt.Sprintf("failed scalingChange agentPool err = %s", err.Error()))
@@ -1659,7 +1679,7 @@ func changeNodeGroupScaling(cluster containerservice.ManagedCluster, nodeGroupII
 		return autoScaleModechangeNodeGroupScaling(cluster, *targetAgentPool, desiredNodeSize, minNodeSize, maxNodeSize, managedClustersClient, agentPoolsClient, virtualMachineScaleSetsClient, virtualMachineScaleSetVMsClient, credentialInfo, region, ctx)
 	} else {
 		// MenualScale
-		return menualScaleModechangeNodeGroupScaling(cluster, *targetAgentPool, desiredNodeSize, minNodeSize, maxNodeSize, managedClustersClient, agentPoolsClient, virtualMachineScaleSetsClient, virtualMachineScaleSetVMsClient, credentialInfo, region, ctx)
+		return manualScaleModechangeNodeGroupScaling(cluster, *targetAgentPool, desiredNodeSize, minNodeSize, maxNodeSize, managedClustersClient, agentPoolsClient, virtualMachineScaleSetsClient, virtualMachineScaleSetVMsClient, credentialInfo, region, ctx)
 	}
 }
 
